@@ -20,6 +20,35 @@ def bit_flipping(bloom, p = 0.5):
 
     return bloom
 
+def create_bloom_dicts(bloom_size, number_of_hashes, profile_array, bit_flip_possibility, bloom_and_blip):
+    # Create the bloom filter for each person in the dataset 
+    # and add all of the profile items.
+    bloom_dict = {}
+    bloom_dict_flipped = {}
+
+    for row in profile_array:
+        bloom = BloomFilter(bloom_size, number_of_hashes)
+
+        for index in range(1, len(row)):
+            bloom.add(row[index])
+        
+        bloom_dict[row[0]] = bloom
+
+        # Avoid having to add all the items into another bloom filter object.
+        new_bloom = copy.deepcopy(bloom)
+ 
+        # Bit flip here to create the perturbed bloom filter and save it in the correct 
+        # dictionary. 
+        bloom_dict_flipped[row[0]] = bit_flipping(new_bloom, bit_flip_possibility)
+
+    # Remove the names from the array so you have only the items.
+    profile_array = np.delete(profile_array, 0, 1)
+
+    if bloom_and_blip:
+        return bloom_dict, bloom_dict_flipped, profile_array
+    
+    return bloom_dict_flipped, profile_array
+
 def test_bloom_filter(data, number_of_hashes):
     # Testing Bloom filter functionality.
 
@@ -70,39 +99,43 @@ def faker_experiment_blip(bloom_size, dataset_size, number_of_hashes, bit_flip_p
     df = pd.DataFrame([ {'name': fake.name(), 'company': fake.company(), 'job': fake.job(), 'country': fake.country()} for _ in range(dataset_size)])
 
     profile_array = df.to_numpy()
-    bloom_dict = {}
-    bloom_dict_flipped = {}
+
+    return create_bloom_dicts(bloom_size, number_of_hashes, profile_array, bit_flip_possibility, bloom_and_blip)
+
+def zoo_experiment_blip(bloom_size, dataset_size, number_of_hashes, bit_flip_possibility = 0.5, bloom_and_blip = False):
     
-    # Create the bloom filter for each person in the dataset 
-    # and add all of the profile items.
-    for row in profile_array:
-        bloom = BloomFilter(bloom_size, number_of_hashes)
+    df = pd.read_csv('zooData/zoo.csv')
 
-        for index in range(1, len(row)):
-            bloom.add(row[index])
-        
-        bloom_dict[row[0]] = bloom
+    # Need to shuffle the dataset so the size of the dataset thats used
+    # is not used as a clue to the set of animals included.
+    df = df.sample(frac=1).reset_index(drop=True)
 
-        # Avoid having to add all the items into another bloom filter object.
-        new_bloom = copy.deepcopy(bloom)
- 
-        # Bit flip here to create the perturbed bloom filter and save it in the correct 
-        # dictionary. 
-        bloom_dict_flipped[row[0]] = bit_flipping(new_bloom, bit_flip_possibility)
+    if (dataset_size > 0) and (dataset_size < len(df)):
+        df = df.iloc[:dataset_size]
 
-    # Remove the names from the array so you have only the items.
-    profile_array = np.delete(profile_array, 0, 1)
-
-    if bloom_and_blip:
-        return bloom_dict, bloom_dict_flipped, profile_array
+    # Change the dataset -> instead of having binary values to respresent 
+    # presence add the name of the column as a prefix to reduce the number 
+    # of collisions in the bloom filter.
+    for col in df.columns[1:]:
+        df[col] = col + df[col].astype(str)
     
-    return bloom_dict_flipped, profile_array
+    profile_array = df.to_numpy()
 
-def run_faker_experiments(bloom_size, dataset_size, hash_values, bit_flip_values, number_of_runs):
+    return create_bloom_dicts(bloom_size, number_of_hashes, profile_array, bit_flip_possibility, bloom_and_blip)
 
-    # Want to run the faker experiment with different flip possibilities
-    # If hash_values and bit_flip_values are a single integer, convert to a list
-    # of number_of_runs integers with the same value. 
+def run_experiments(bloom_size, dataset_size, hash_values, bit_flip_values, number_of_runs, experiment_name):
+
+    experiment_dict = {
+        'faker': faker_experiment_blip,
+        'zoo': zoo_experiment_blip
+    }
+    # If the inputted experiment isn't in the dictionary then use Zoo 
+    # as a default.
+    if experiment_name not in experiment_dict.keys():
+        experiment_name = 'zoo'
+
+    # Want to run the experiment with different flip possibilities
+    # If hash_values and bit_flip_values are a single integer, convert to a list.
     if type(hash_values) != list:
         hash_values = [hash_values]
 
@@ -116,12 +149,12 @@ def run_faker_experiments(bloom_size, dataset_size, hash_values, bit_flip_values
         results = []
         for _ in range(number_of_runs):
 
-          results.append(test_bloom_filter_content(faker_experiment_blip(bloom_size, dataset_size, hash_values[hash], bit_flip_values[0])))
+          results.append(test_bloom_filter_content(experiment_dict[experiment_name](bloom_size, dataset_size, hash_values[hash], bit_flip_values[0])))
 
         hash_results.append(results)
 
     flip_results = []
-    bloom_data = faker_experiment_blip(bloom_size, dataset_size, hash_values[0], bit_flip_values[0], True)
+    bloom_data = experiment_dict[experiment_name](bloom_size, dataset_size, hash_values[0], bit_flip_values[0], True)
     bloom_dict, profile_array =  bloom_data[0], bloom_data[2]
 
      # Compare results when different bit-flip probabilities are used.
@@ -144,14 +177,13 @@ def run_faker_experiments(bloom_size, dataset_size, hash_values, bit_flip_values
 
     # Create graphs to display the change in percentage of items not found
     # when changing the hash functions/flipping possibilities.
-    plt.title("Hash Experimentation")
-    xvals = list(range(1, len(hash_results) + 1))
-    plt.plot(xvals, hash_mean, label = "Hash Results")
+    plt.title(experiment_name.capitalize() + " Hash Experimentation")
+    plt.plot(hash_values, hash_mean, label = "Hash Results")
     plt.xlabel("No. of Hash Functions Used")
     plt.ylabel("Percentage of Items not Found")
     plt.show()
 
-    plt.title("Flip Experimentation")
+    plt.title( experiment_name.capitalize() + " Flip Experimentation")
     plt.plot(bit_flip_values, flip_mean, label = "Flip Results")
     plt.xlabel("Probability of Bit flip Used")
     plt.ylabel("Percentage of Items not Found")
@@ -183,12 +215,18 @@ if __name__ == "__main__":
     # # Params: bloom, p
     # test_bit_flipping(b1, 1)
 
-    # First Experiment using the Faker dataset.
-    # Params: bloom_size, dataset_size, number_of_hashes, bit_flip_possibility
+    # # First Experiment using the Faker dataset.
+    # # Params: bloom_size, dataset_size, number_of_hashes, bit_flip_possibility
     # print(test_bloom_filter_content(faker_experiment_blip(30, 10, 2, 0.5)))
 
-    # Params: bloom_size, dataset_size, hash_values, bit_flip_values, number_of_runs)
-    run_faker_experiments(50, 10, list(range(2, 8)), [0.2, 0.5, 0.8], 10)
-    run_faker_experiments(100, 50, list(range(21, 26)), [0.25, 0.5, 0.75, 0.9], 10)
+    # # Params: bloom_size, dataset_size, hash_values, bit_flip_values, number_of_runs
+    # run_experiments(50, 10, list(range(2, 8)), [0.2, 0.5, 0.8], 10, "faker")
+    # run_experiments(100, 50, list(range(21, 26)), [0.25, 0.5, 0.75, 0.9], 10, "faker")
 
+    # # First Experiment using the Zoo animal dataset.
+    # # Params: bloom_size, dataset_size, number_of_hashes, bit_flip_possibility.
+    # print(test_bloom_filter_content(zoo_experiment_blip(30, 10, 2, 0.5)))
     
+    # # Params: bloom_size, dataset_size, hash_values, bit_flip_values, number_of_runs
+    run_experiments(50, 10, list(range(2, 8)), [0.2, 0.5, 0.8], 10, "zoo")
+    run_experiments(100, 50, list(range(21, 26)), [0.25, 0.5, 0.75, 0.9], 10, "zoo")
